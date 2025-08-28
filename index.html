@@ -36,6 +36,27 @@
     .del{position:absolute;right:6px;top:6px;border:none;background:transparent;color:#fff;opacity:.65;cursor:pointer;display:none}
     .me:hover .del{display:block}
   </style>
+
+  <!-- AUTOCONFIG Dev/Prod: compila automaticamente i campi Hub/API -->
+  <script>
+    const DEV_API  = "http://localhost:5085";
+    const PROD_API = "https://tyt-app-gxfsdpg8erdhbfcj.italynorth-01.azurewebsites.net";
+
+    function pickApiBase() {
+      const h = location.hostname.toLowerCase();
+      const isLocal = h === "localhost" || h === "127.0.0.1";
+      return (isLocal ? DEV_API : PROD_API).replace(/\/+$/,'');
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const apiBase = pickApiBase();
+      // setta gli input di default (puoi sempre cambiarli a mano)
+      const apiInput = document.getElementById("api");
+      const hubInput = document.getElementById("hub");
+      if (apiInput) apiInput.value = apiBase;
+      if (hubInput) hubInput.value = apiBase + "/hubs/chat";
+    });
+  </script>
 </head>
 <body>
   <header>
@@ -47,10 +68,10 @@
     <section class="panel">
       <div class="row toolbar">
         <label>Hub:
-          <input id="hub" type="text" size="40" value="http://localhost:5085/hubs/chat">
+          <input id="hub" type="text" size="40" value="">
         </label>
         <label>API:
-          <input id="api" type="text" size="30" value="http://localhost:5085">
+          <input id="api" type="text" size="30" value="">
         </label>
         <label>JWT:
           <input id="jwt" type="text" size="60" placeholder="incolla solo il token (senza 'Bearer ')">
@@ -88,7 +109,6 @@
     const setStatus = s => $("#status").textContent = s;
     const parseJwt = t => { try { return JSON.parse(atob(t.split('.')[1])); } catch { return {}; } };
     const labelFor = userId => (userId === myId ? "Tu" : (participantsMap[userId] || userId));
-
     function putParticipants(list){ participantsMap = Object.fromEntries(list.map(x => [x.userId, x.display])); }
 
     function messageNode({ id, senderId, senderDisplay, body, createdAt }){
