@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>TYT – Live Chat Test</title>
+
+  <!-- SignalR browser client -->
+  <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@8.0.7/dist/browser/signalr.min.js"></script>
+
+  <style>
+    :root{ --bg:#0b1020;--panel:#0f1630;--muted:#98a3c7;--border:#293157;--me:#2a6df5;--other:#151d44;--text:#e9eefb;}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+    header{padding:14px 18px;background:#141a33;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    header h1{margin:0;font-size:16px;font-weight:600}
+    main{max-width:980px;margin:0 auto;padding:16px;display:grid;gap:16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:12px}
+    label{font-size:12px;opacity:.85}
+    input,button{padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0e1430;color:var(--text)}
+    input[type="text"]{min-width:260px}
+    button{cursor:pointer;background:#0e1430}
+    button.primary{background:var(--me);border-color:#1e53c2;color:#fff}
+    #log{max-height:140px;overflow:auto;background:#0c1230;border:1px solid var(--border);border-radius:10px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre-wrap}
+    .chat{display:grid;grid-template-rows:auto 1fr auto;gap:10px;height:60vh}
+    #typing{height:18px;font-size:13px;color:var(--muted)}
+    #messages{overflow:auto;display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--border);border-radius:12px;background:#0c1230}
+    .bubble{max-width:72%;padding:10px 12px;border-radius:14px;line-height:1.25;word-wrap:break-word;white-space:pre-wrap;position:relative}
+    .me{align-self:flex-end;margin-left:auto;background:var(--me);border:1px solid #1e53c2;color:#fff}
+    .other{align-self:flex-start;margin-right:auto;background:var(--other);border:1px solid var(--border)}
+    .meta{font-size:11px;opacity:.85;margin-bottom:4px}
+    .controls{display:flex;gap:8px}
+    .controls input{flex:1}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap}
+    .del{position:absolute;right:6px;top:6px;border:none;background:transparent;color:#fff;opacity:.65;cursor:pointer;display:none}
+    .me:hover .del{display:block}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TYT – Live Chat Test</h1>
+    <span id="status" style="font-size:12px;color:var(--muted)">Disconnected</span>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="row toolbar">
+        <label>Hub:
+          <input id="hub" type="text" size="40" value="http://localhost:5085/hubs/chat">
+        </label>
+        <label>API:
+          <input id="api" type="text" size="30" value="http://localhost:5085">
+        </label>
+        <label>JWT:
+          <input id="jwt" type="text" size="60" placeholder="incolla solo il token (senza 'Bearer ')">
+        </label>
+      </div>
+      <div class="row toolbar" style="margin-top:6px">
+        <label>ChatId:
+          <input id="chatId" type="text" size="40" placeholder="GUID della chat">
+        </label>
+        <button id="connect" class="primary">Connect</button>
+        <button id="join">Join</button>
+        <button id="load">Load History</button>
+      </div>
+      <div id="log"></div>
+    </section>
+
+    <section class="panel chat">
+      <div id="typing"></div>
+      <div id="messages"></div>
+      <div class="controls">
+        <input id="msg" type="text" placeholder="Scrivi un messaggio e premi Invio…">
+        <button id="send" class="primary">Invia</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ---- stato client
+    let connection, typingSendTimer, typingClearTimer, typingBannerTimer;
+    let myId = "", participantsMap = {}; // userId -> display
+
+    // ---- helpers
+    const $ = s => document.querySelector(s);
+    const log = m => { const el = $("#log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; };
+    const setStatus = s => $("#status").textContent = s;
+    const parseJwt = t => { try { return JSON.parse(atob(t.split('.')[1])); } catch { return {}; } };
+    const labelFor = userId => (userId === myId ? "Tu" : (participantsMap[userId] || userId));
+
+    function putParticipants(list){ participantsMap = Object.fromEntries(list.map(x => [x.userId, x.display])); }
+
+    function messageNode({ id, senderId, senderDisplay, body, createdAt }){
+      const mine = senderId === myId;
+      if (senderDisplay) participantsMap[senderId] = senderDisplay;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'bubble ' + (mine ? 'me' : 'other');
+      wrap.dataset.msgid = id;
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const time = new Date(createdAt).toLocaleTimeString();
+      meta.textContent = `${labelFor(senderId)} · ${time}`;
+
+      const txt = document.createElement('div');
+      txt.textContent = body;
+
+      wrap.appendChild(meta);
+      wrap.appendChild(txt);
+
+      // tasto elimina SOLO sui miei messaggi
+      if (mine && id) {
+        const del = document.createElement('button');
+        del.className = 'del';
+        del.title = 'Elimina messaggio';
+        del.textContent = '🗑';
+        del.onclick = async () => {
+          const api = $("#api").value.replace(/\/+$/,'');
+          const token = $("#jwt").value.trim();
+          const chatId = $("#chatId").value.trim();
+          try{
+            const res = await fetch(`${api}/api/chats/${chatId}/messages/${id}`, {
+              method: 'DELETE',
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (res.ok) { wrap.remove(); log(`Deleted ${id}`); }
+            else { log(`Delete error: ${res.status}`); }
+          } catch(e){ log('Delete error: ' + e); }
+        };
+        wrap.appendChild(del);
+      }
+
+      return wrap;
+    }
+
+    function renderMessage(m){
+      $("#messages").appendChild(messageNode(m));
+      $("#messages").scrollTop = $("#messages").scrollHeight;
+    }
+
+    async function fetchParticipants() {
+      const api = $("#api").value.replace(/\/+$/,'');
+      const token = $("#jwt").value.trim();
+      const chatId = $("#chatId").value.trim();
+      const r = await fetch(`${api}/api/chats/${chatId}/participants`, {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      if (r.ok) putParticipants(await r.json());
+    }
+
+    async function fetchHistory() {
+      const api = $("#api").value.replace(/\/+$/,'');
+      const token = $("#jwt").value.trim();
+      const chatId = $("#chatId").value.trim();
+      if (!api || !token || !chatId) { alert("API, JWT e ChatId necessari"); return; }
+
+      await fetchParticipants();
+
+      const res = await fetch(`${api}/api/chats/${chatId}/messages?take=50`, {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      if (!res.ok) { log(`History error: ${res.status}`); return; }
+      const list = await res.json();
+
+      $("#messages").innerHTML = "";
+      list.reverse().forEach(m => renderMessage({
+        id: m.id,
+        senderId: m.senderId,
+        senderDisplay: participantsMap[m.senderId],
+        body: m.body,
+        createdAt: m.createdAt
+      }));
+      log(`Loaded ${list.length} messages`);
+    }
+
+    // ---- connect
+    $("#connect").onclick = async () => {
+      const hub = $("#hub").value.trim();
+      const token = $("#jwt").value.trim();
+      if (!hub || !token) { alert("Hub e JWT necessari"); return; }
+
+      const payload = parseJwt(token);
+      myId = payload.sub || payload.nameidentifier || payload.unique_name || "";
+
+      connection = new signalR.HubConnectionBuilder()
+        .withUrl(hub, { accessTokenFactory: () => token, withCredentials: true })
+        .withAutomaticReconnect()
+        .build();
+
+      // eventi realtime
+      connection.on("MessageReceived", m => renderMessage(m));
+
+      connection.on("Typing", (chatId, userId, display, isTyping) => {
+        participantsMap[userId] = display;
+        clearTimeout(typingBannerTimer);
+        if (isTyping){
+          $("#typing").textContent = `${display} sta scrivendo…`;
+          typingBannerTimer = setTimeout(() => $("#typing").textContent = "", 1500);
+        } else {
+          $("#typing").textContent = "";
+        }
+      });
+
+      connection.on("UserJoined", (_, userId, display) => {
+        participantsMap[userId] = display;
+        log(`UserJoined: ${display} (${userId})`);
+      });
+      connection.on("UserLeft",  (_, userId, display) => log(`UserLeft: ${display} (${userId})`));
+
+      connection.onreconnecting(() => setStatus("Reconnecting…"));
+      connection.onreconnected(() => setStatus("Connected"));
+      connection.onclose(() => setStatus("Disconnected"));
+
+      try { await connection.start(); setStatus("Connected"); log("Connected."); }
+      catch (err) { setStatus("Disconnected"); log("Connect error: " + (err?.message || err)); }
+    };
+
+    // ---- join chat
+    $("#join").onclick = async () => {
+      const chatId = $("#chatId").value.trim();
+      if (!connection || connection.state !== "Connected") { alert("Connettiti prima"); return; }
+      try { await fetchParticipants(); await connection.invoke("JoinChat", chatId); log("JoinChat OK"); }
+      catch (e) { log("JoinChat error: " + (e?.message || e)); }
+    };
+
+    // ---- invio messaggio
+    $("#send").onclick = async () => {
+      const chatId = $("#chatId").value.trim();
+      const body = $("#msg").value.trim();
+      if (!connection || !chatId || !body) return;
+      try { await connection.invoke("SendMessage", chatId, body); $("#msg").value = ""; sendTyping(false); }
+      catch (e) { log("SendMessage error: " + (e?.message || e)); }
+    };
+    $("#msg").addEventListener("keydown", e => { if (e.key === "Enter") $("#send").click(); });
+
+    // ---- typing true/false con debounce
+    function sendTyping(isTyping){
+      const chatId = $("#chatId").value.trim();
+      if (!connection || connection.state !== "Connected" || !chatId) return;
+      connection.invoke("Typing", chatId, isTyping).catch(()=>{});
+    }
+    $("#msg").addEventListener("input", () => {
+      clearTimeout(typingSendTimer); clearTimeout(typingClearTimer);
+      typingSendTimer = setTimeout(() => sendTyping(true), 200);
+      typingClearTimer = setTimeout(() => sendTyping(false), 1500);
+    });
+    $("#msg").addEventListener("blur", () => sendTyping(false));
+
+    $("#load").onclick = fetchHistory;
+  </script>
+</body>
+</html>
